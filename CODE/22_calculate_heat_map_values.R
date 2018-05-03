@@ -63,3 +63,19 @@ saveRDS(garbageCarts_heat, "DATA/garbageCarts_heat.Rds")
 saveRDS(sanitationComplaints_heat, "DATA/sanitationComplaints_heat.Rds")
 
 
+burglary_heat
+garbageCarts_heat
+sanitationComplaints_heat
+
+library(ggplot2)
+ggplot(sanitationComplaints_heat, aes(x=heat_values)) + geom_density()
+
+library(tidyverse)
+foodInspect %>% 
+    inner_join(sanitationComplaints_heat) %>% 
+    ggplot(aes(x=Latitude, y= Longitude, colour(heat_values)) + 
+    geom_point(alpha=0.5, size=1) +
+    scale_color_gradientn(viridis(256, option = "A")))
+
+
+

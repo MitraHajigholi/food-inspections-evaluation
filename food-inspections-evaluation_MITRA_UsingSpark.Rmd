@@ -1,0 +1,348 @@
+---
+title: "Chicago Food Inspection USING SPARK"
+author: "Mitra Hajigholi"
+date: "2 May 2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse) # group_by and filter and stuff in this package
+library(ggplot2)
+library(tidyverse)
+library(recipes)
+library(glmnetUtils)
+
+```
+### READ
+```{r}
+dat_model <- readRDS("C:/Users/Admin/Documents/food-inspections-evaluation/DATA/dat_model.Rds")
+food_inspections <- readRDS("C:/Users/Admin/Documents/food-inspections-evaluation/DATA/food_inspections.Rds")
+
+burglary_heat <- readRDS("C:/Users/Admin/Documents/food-inspections-evaluation/DATA/burglary_heat.Rds")
+garbageCarts_heat <- readRDS("C:/Users/Admin/Documents/food-inspections-evaluation/DATA/garbageCarts_heat.Rds")
+sanitationComplaints_heat <- readRDS("C:/Users/Admin/Documents/food-inspections-evaluation/DATA/sanitationComplaints_heat.Rds")
+```
+
+
+
+### Exploratory
+```{r eval=FALSE}
+
+head(food_inspections,"foodinspect")
+
+dat_model %>% 
+  as_data_frame() %>% 
+  DataExplorer::GenerateReport()
+
+
+food_inspections %>% 
+  as_data_frame() %>% 
+  DataExplorer::GenerateReport()
+```
+
+```{r}
+
+### Plot the heat map
+
+burglary_heat
+garbageCarts_heat
+sanitationComplaints_heat
+
+
+ggplot(garbageCarts_heat, aes(x=heat_values)) + geom_density()
+
+
+food_inspections %>% 
+    inner_join(sanitationComplaints_heat) %>% 
+    ggplot(aes(x=Latitude, y= Longitude, colour=heat_values)) + 
+               geom_point(alpha=0.5, size=1) +
+               scale_color_gradientn(colours = viridisLite::viridis(256, option = "A"))
+
+
+
+food_inspections %>% 
+    inner_join(garbageCarts_heat) %>% 
+    ggplot(aes(x=Latitude, y= Longitude, colour=heat_values)) + 
+               geom_point(alpha=0.5, size=1) +
+               scale_color_gradientn(colours = viridisLite::viridis(256, option = "A"))
+
+
+
+food_inspections %>% 
+    inner_join(burglary_heat) %>% 
+    ggplot(aes(x=Latitude, y= Longitude, colour=heat_values)) + 
+               geom_point(alpha=0.5, size=1) +
+               scale_color_gradientn(colours = viridisLite::viridis(256, option = "A"))
+
+```
+### Reason for failing Inspection
+- Burglary (broken)
+- garbage complaints (dirty)
+- sanitation complains (dirty)
+- warm weather (higher risk of failiur) 
+- humidity(!) + temperatureMax
+- criticalCount + pastCritical (!)
+- seriousCount + pastSerious   (!)
+- past minor
+- pastFail
+- fail_flag
+- mobile_food_license
+- consumption_on_premises_incidental_activi (?)
+- Public_place_of_amusement
+- childrens_services_facility_license
+- 
+
+
+
+
+##==============================================================================
+## INITIALIZE
+##==============================================================================
+
+```{r}
+
+# Load libraries
+geneorama::detach_nonstandard_packages()
+## Load libraries that are used
+geneorama::loadinstall_libraries(c("data.table", "glmnet", "ggplot2"))
+## Load custom functions
+geneorama::sourceDir("CODE/functions/")
+
+
+```
+
+##==============================================================================
+## LOAD CACHED  FILES
+##==============================================================================
+```{r}
+
+dat <- dat_model
+## Only keep "Retail Food Establishment"
+dat <- dat[LICENSE_DESCRIPTION == "Retail Food Establishment"]
+## Remove License Description
+dat[ , LICENSE_DESCRIPTION := NULL]
+dat <- na.omit(dat)
+
+## Add criticalFound variable to dat:
+dat[ , criticalFound := pmin(1, criticalCount)]
+
+## Set the key for dat
+setkey(dat, Inspection_ID)
+
+
+
+head(dat)
+```
+
+
+##==============================================================================
+## CREATE MODEL DATA
+##==============================================================================
+
+
+
+```{r}
+
+# sort(colnames(dat))
+### list contains Reason for failing Inspection
+xmat <- dat[ , list(Inspector = Inspector_Assigned,
+                    pastSerious = pmin(pastSerious, 1),
+                    pastCritical = pmin(pastCritical, 1),
+                    pastFail,
+                    fail_flag,
+                    timeSinceLast,
+                    ageAtInspection = ifelse(ageAtInspection > 4, 1L, 0L),
+                    consumption_on_premises_incidental_activity,
+                    childrens_services_facility_license,
+                    public_place_of_amusement,
+                    mobile_food_license,
+                    tobacco_retail_over_counter,
+                    temperatureMax,
+                    humidity,
+                    heat_burglary = pmin(heat_burglary, 70),
+                    heat_sanitation = pmin(heat_sanitation, 70),
+                    heat_garbage = pmin(heat_garbage, 50),
+                    # Facility_Type,
+                    criticalFound),
+             keyby = Inspection_ID]
+
+
+
+#mm <- model.matrix(criticalFound ~ . -1, data=xmat[ , -1, with=F])
+#mm <- as.data.table(mm)
+#str(mm)
+#colnames(mm)
+
+
+## Check to see if any rows didn't make it through the model.matrix formula
+nrow(dat)
+nrow(xmat)
+#nrow(mm)
+
+
+```
+
+
+
+##==============================================================================
+## CREATE TEST / TRAIN PARTITIONS
+##==============================================================================
+## randomly select 70% train /30% test
+```{r}
+
+
+
+xmat %>% 
+  modelr::resample_partition(c(train=0.7, test =0.3)) ->
+  splits
+
+splits %>% 
+  pluck("train") %>% 
+  as_data_frame() ->
+  train_raw
+
+splits %>% 
+  pluck("test") %>% 
+  as_data_frame() ->
+  test_raw
+  
+  
+#iiTrain <- train_raw
+#iiTest <- test_raw
+
+```
+
+##==============================================================================
+## Prepping data, Scaling of data 
+##==============================================================================
+```{r}
+
+
+prepdata <- prep(recipe(criticalFound~., train_raw)  %>% 
+                       step_naomit(all_predictors())) 
+                        
+prepdata <- prep(prepdata %>% 
+                       step_BoxCox(temperatureMax, humidity) %>% 
+                       step_YeoJohnson(heat_burglary, heat_sanitation, heat_garbage)
+                   ) 
+
+# do what we prepped to do
+train_prep <- bake(prepdata, train_raw)
+test_prep <- bake(prepdata, test_raw)
+
+                        
+
+                        
+
+ggplot(data =train_prep, aes(x=train_prep$temperatureMax)) + 
+  geom_density() 
+ 
+ggplot(data =train_prep, aes(x=train_prep$humidity)) + 
+  geom_density() 
+
+ggplot(data =train_prep, aes(x=train_prep$heat_burglary)) + 
+  geom_density() 
+
+ggplot(data =train_prep, aes(x=train_prep$heat_sanitation)) + 
+  geom_density() 
+
+ggplot(data =train_prep, aes(x=train_prep$heat_garbage)) + 
+  geom_density() 
+                   
+                    
+                    
+```
+ 
+
+
+##==============================================================================
+## A glmnet for feature selection
+##==============================================================================
+
+#Use regularization to smooth results by modifying coefficients of variables.
+
+```{r}
+
+# what scaling values, how good the models are as a result.
+glmnet_unbal <- glmnet(criticalFound~.,
+                       train_prep,
+                       family="binomial",
+                       alpha = 0.5,  # some l1 and ome l2
+                       intercept = FALSE)
+
+glmnet_unbal
+
+
+
+glance(glmnet_unbal) # returns key metrics of the models fit 
+```
+
+
+
+```{r}
+# scale of the coeff at each of the points
+plot(glmnet_unbal, label = TRUE)  
+
+# each line is a coeff, top x axisshows number of columns, L1Norm = lasso normalized??
+```
+
+
+```{r}
+
+#set.seed(1050104) # reproduce random
+# cv = crossvalidation, multiple iteration of the model fitting process, each iteration runs on each slice of the data (splits it up in 5 random samples, each iteration 4 used for training, 1 for testing) 
+glmnet_unbal_cv <- cv.glmnet(criticalFound~.,
+                             train_prep,
+                             family="binomial",  #distribution family
+                             alpha = 0.5)
+
+plot(glmnet_unbal_cv)
+
+# different regularization 
+# many coulmns, penalty to columns = peanilizing, 
+# the better we are predicting the outcome, the higher y axis will be = binomial deviance
+# dotted lines are showing cut-off points for the lambda coeff, basically simlpe or complex good enough...
+
+coefficients(glmnet_unbal_cv)
+
+coef(glmnet_unbal_cv, s = "lambda.min")
+
+#lambda.min = lambda that most minimises predictive error
+#lambda.1se = lambda that performs more penalization but still has close predictive power
+
+```
+
+
+
+```{r}
+
+test_raw %>% 
+  bake(prepdata, .) %>% 
+  modelr:: add_predictions(glmnet_unbal,var = "glm_unbal") ->
+  test_scored
+
+#test_scored %>% 
+#  ggplot(aes(x=glmnet_unbal, group=was_delayed, fill= was_delayed)) + 
+#  geom_density(alpha=0.5) + 
+#  geom_vline(aes(xintercept=0))
+
+test_scored$glmnet_unbal_cv <- as.vector(predict(glmnet_unbal_cv, 
+                                                 test_scored,
+                                                 na.action = na.pass)) 
+
+
+test_scored$classification <- ifelse(test_scored$glmnet_unbal_cv < -2, 0,1) 
+
+
+test_scored %>% 
+    count(criticalFound,classification)
+
+# gray = no critc failiur
+# ljusbl = critical found
+test_scored %>% 
+  ggplot(aes(x=glmnet_unbal_cv, group=criticalFound, fill= criticalFound)) + 
+  geom_density(alpha=0.5) + 
+  geom_vline(aes(xintercept=-2))
+```
+

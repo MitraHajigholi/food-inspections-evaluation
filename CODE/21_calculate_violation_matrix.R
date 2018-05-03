@@ -30,3 +30,5 @@ foodInspect <- readRDS("DATA/food_inspections.Rds")
 violation_dat <- calculate_violation_types(foodInspect$Violations,
                                            Inspection_ID = foodInspect$Inspection_ID)
 saveRDS(violation_dat, "DATA/violation_dat.Rds")
+
+violation_dat
