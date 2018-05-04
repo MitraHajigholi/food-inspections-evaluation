@@ -140,71 +140,31 @@ head(food_inspections_tbl)  # head works for tables and dataframes
 
 
 ```
-
 ##==============================================================================
-## FILTER TABLE  FILES
+## MUTATE TABLES
 ##==============================================================================
 ```{r}
 
 dat <- dat_model_tbl
-## Only keep "Retail Food Establishment"
-dat  %>%  
-    filter(LICENSE_DESCRIPTION == "Retail Food Establishment") %>% 
-    select(-LICENSE_DESCRIPTION)  ->  ## Remove License Description
-    dat_cleaned
 
-## print nr of row     
-sdf_nrow(dat_cleaned)
-sdf_nrow(dat)
-# and columns
-sdf_ncol(dat_cleaned)
-sdf_ncol(dat)
-
-
+### list contains Reason for failing Inspection
 ## Add criticalFound variable to dat:
-dat_cleaned %>% 
-    mutate(criticalFound = pmin(1, criticalCount)) ->
+
+dat  %>%
+    rename(Inspector = Inspector_Assigned) %>% 
+    mutate(criticalFound = pmin(1, criticalCount),
+           pastSerious = pmin(pastSerious, 1),
+           pastCritical = pmin(pastCritical, 1),
+           ageAtInspection = ifelse(ageAtInspection > 4, 1L, 0L),
+           heat_burglary = pmin(heat_burglary, 70),
+           heat_sanitation = pmin(heat_sanitation, 70),
+           heat_garbage = pmin(heat_garbage, 50)
+           ) ->
     dat_mutated
     ## Set the key for dat
 
-#setkey(dat, Inspection_ID)  # can not use set key in spark, do not need to...
-head(dat_cleaned)
+
 head(dat_mutated)
-```
-
-
-##==============================================================================
-## CREATE MODEL DATA
-##==============================================================================
-
-
-
-```{r}
-
-# sort(colnames(dat))
-### list contains Reason for failing Inspection
-xmat <- dat[ , list(Inspector = Inspector_Assigned,
-                    pastSerious = pmin(pastSerious, 1),
-                    pastCritical = pmin(pastCritical, 1),
-                    pastFail,
-                    fail_flag,
-                    timeSinceLast,
-                    ageAtInspection = ifelse(ageAtInspection > 4, 1L, 0L),
-                    consumption_on_premises_incidental_activity,
-                    childrens_services_facility_license,
-                    public_place_of_amusement,
-                    mobile_food_license,
-                    tobacco_retail_over_counter,
-                    temperatureMax,
-                    humidity,
-                    heat_burglary = pmin(heat_burglary, 70),
-                    heat_sanitation = pmin(heat_sanitation, 70),
-                    heat_garbage = pmin(heat_garbage, 50),
-                    # Facility_Type,
-                    criticalFound),
-             keyby = Inspection_ID]
-
-
 
 #mm <- model.matrix(criticalFound ~ . -1, data=xmat[ , -1, with=F])
 #mm <- as.data.table(mm)
@@ -217,8 +177,57 @@ nrow(dat)
 nrow(xmat)
 #nrow(mm)
 
+#setkey(dat, Inspection_ID)  # can not use set key in spark, do not need to...
+head(dat_cleaned)
+head(dat_mutated)
+```
+
+
+##==============================================================================
+## FILTER and SELECT TABLES 
+## -CREATE MODEL DATA
+##==============================================================================
+```{r}
+
+## Only keep "Retail Food Establishment"
+dat_mutated  %>%  
+    filter(LICENSE_DESCRIPTION == "Retail Food Establishment") %>% 
+    select(Inspector,
+           pastSerious,
+           criticalFound,
+           pastCritical,
+           ageAtInspection,
+           -LICENSE_DESCRIPTION, 
+           pastFail,
+           fail_flag,
+           timeSinceLast,
+           consumption_on_premises_incidental_activity,
+           childrens_services_facility_license,
+           public_place_of_amusement,
+           mobile_food_license,
+           tobacco_retail_over_counter,
+           temperatureMax,
+           humidity,
+           heat_burglary,
+           heat_sanitation,
+           heat_garbage,
+           criticalFound
+           )   ->   ## Remove License Description    
+    dat_cleaned
+
+
+####Check
+## print nr of row     
+sdf_nrow(dat_cleaned)
+sdf_nrow(dat)
+# and columns
+sdf_ncol(dat_cleaned)
+sdf_ncol(dat)
 
 ```
+
+
+
 
 
 
@@ -228,9 +237,16 @@ nrow(xmat)
 ## randomly select 70% train /30% test
 ```{r}
 
+partitions <- 
+  sdf_partition(dat_cleaned, training = 0.75, test = 0.25, seed = 1099)
+
+fit <- partitions$training %>%
+  ml_logistic_regression(criticalFound~.)
+
+predict(fit, partitions$test)
 
 
-xmat %>% 
+dat_cleaned %>% 
   modelr::resample_partition(c(train=0.7, test =0.3)) ->
   splits
 
@@ -247,6 +263,8 @@ splits %>%
   
 #iiTrain <- train_raw
 #iiTest <- test_raw
+
+# sparklyr::sdf_register("nameoftable")
 
 ```
 
