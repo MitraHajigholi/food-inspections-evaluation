@@ -241,10 +241,13 @@ partitions <-
   sdf_partition(dat_cleaned, training = 0.75, test = 0.25, seed = 1099)
 
 fit <- partitions$training %>%
+    select(criticalFound, pastSerious, heat_sanitation) %>% 
   ml_logistic_regression(criticalFound~.)
 
-predict(fit, partitions$test)
+fit
 
+sdf_predict(fit, partitions$test)
+#partitions$test %>% sdf_predict(fit, .)
 
 dat_cleaned %>% 
   modelr::resample_partition(c(train=0.7, test =0.3)) ->
