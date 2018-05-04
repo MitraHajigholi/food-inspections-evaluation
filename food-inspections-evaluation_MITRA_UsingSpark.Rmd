@@ -12,6 +12,7 @@ knitr::opts_chunk$set(echo = TRUE)
 library(sparklyr)
 library(dplyr)
 library(ggplot2)
+library(ggthemes)
 
 sc <- spark_connect("local")
 
@@ -174,11 +175,10 @@ head(dat_mutated)
 
 ## Check to see if any rows didn't make it through the model.matrix formula
 nrow(dat)
-nrow(xmat)
-#nrow(mm)
+nrow(dat_mutated)
 
 #setkey(dat, Inspection_ID)  # can not use set key in spark, do not need to...
-head(dat_cleaned)
+head(dat)
 head(dat_mutated)
 ```
 
@@ -192,7 +192,7 @@ head(dat_mutated)
 ## Only keep "Retail Food Establishment"
 dat_mutated  %>%  
     filter(LICENSE_DESCRIPTION == "Retail Food Establishment") %>% 
-    select(Inspector,
+    select(#Inspector,
            pastSerious,
            criticalFound,
            pastCritical,
@@ -241,166 +241,92 @@ partitions <-
   sdf_partition(dat_cleaned, training = 0.75, test = 0.25, seed = 1099)
 
 fit <- partitions$training %>%
-    select(criticalFound, pastSerious, heat_sanitation) %>% 
+    select(criticalFound, pastSerious, heat_sanitation, pastFail, pastCritical) %>% 
   ml_logistic_regression(criticalFound~.)
 
-fit
 
-sdf_predict(fit, partitions$test)
+scored_data <- sdf_predict(fit, partitions$test)
 #partitions$test %>% sdf_predict(fit, .)
 
-dat_cleaned %>% 
-  modelr::resample_partition(c(train=0.7, test =0.3)) ->
-  splits
-
-splits %>% 
-  pluck("train") %>% 
-  as_data_frame() ->
-  train_raw
-
-splits %>% 
-  pluck("test") %>% 
-  as_data_frame() ->
-  test_raw
-  
-  
-#iiTrain <- train_raw
-#iiTest <- test_raw
+summary(fit)
 
 # sparklyr::sdf_register("nameoftable")
 
 ```
 
 ##==============================================================================
-## Prepping data, Scaling of data 
+## Evaluate 
 ##==============================================================================
 ```{r}
 
+# Plot prediction curve
+#df <- data.frame(
+#  x = partitions$test,
+#  y = collect(sdf_predict(fit, newdata = partitions$test, type = "response"))$prediction  
+  #type = "response" #   0 or 1, if you dont write anything it will give the statical value
+#)
 
-prepdata <- prep(recipe(criticalFound~., train_raw)  %>% 
-                       step_naomit(all_predictors())) 
-                        
-prepdata <- prep(prepdata %>% 
-                       step_BoxCox(temperatureMax, humidity) %>% 
-                       step_YeoJohnson(heat_burglary, heat_sanitation, heat_garbage)
-                   ) 
 
-# do what we prepped to do
-train_prep <- bake(prepdata, train_raw)
-test_prep <- bake(prepdata, test_raw)
+#ggplot(df, aes(x.criticalFound,y))+
+#  geom_point() # +
+ # geom_point(data=beaver, aes(temp,as.numeric(activ)-1), colour="red")
 
-                        
+scored_data
+   
 
-                        
+scored_data %>% 
+    collect() %>% 
+    tidyr::unnest(rawPrediction, probability) %>% 
+    mutate(rowid = row_number()) %>% 
+    filter(rowid %% 2 == 0 ) ->  # critical found = 0, critical not found =1
+    unpacked_data
 
-ggplot(data =train_prep, aes(x=train_prep$temperatureMax)) + 
-  geom_density() 
- 
-ggplot(data =train_prep, aes(x=train_prep$humidity)) + 
-  geom_density() 
+1:10 %% 2
+1:10 %% 3
 
-ggplot(data =train_prep, aes(x=train_prep$heat_burglary)) + 
-  geom_density() 
+ggplot(unpacked_data, aes(probability, group = criticalFound, colour = criticalFound)) +
+    geom_density()
 
-ggplot(data =train_prep, aes(x=train_prep$heat_sanitation)) + 
-  geom_density() 
 
-ggplot(data =train_prep, aes(x=train_prep$heat_garbage)) + 
-  geom_density() 
-                   
+ggplot(unpacked_data, aes(probability, group = criticalFound, fill = criticalFound)) +
+    geom_density(alpha= 0.5)
+
+
+ggplot(unpacked_data, aes(probability, group = criticalFound, fill = as.factor(criticalFound))) +
+           geom_density(alpha= 0.5) +
+           theme(legend.position = "bottom") +
+           #scale_fill_brewer(type = "qual", )
+           theme_tufte() +
+            scale_fill_colorblind()
                     
-                    
+
+
 ```
  
 
 
 ##==============================================================================
-## A glmnet for feature selection
+## ROC curve
 ##==============================================================================
 
-#Use regularization to smooth results by modifying coefficients of variables.
-
 ```{r}
 
-# what scaling values, how good the models are as a result.
-glmnet_unbal <- glmnet(criticalFound~.,
-                       train_prep,
-                       family="binomial",
-                       alpha = 0.5,  # some l1 and ome l2
-                       intercept = FALSE)
 
-glmnet_unbal
+pROC::roc(unpacked_data$criticalFound, unpacked_data$probability) %>% 
+    pROC::ggroc()
+    #    ROCR::performance()
 
-
-
-glance(glmnet_unbal) # returns key metrics of the models fit 
-```
-
-
-
-```{r}
-# scale of the coeff at each of the points
-plot(glmnet_unbal, label = TRUE)  
-
-# each line is a coeff, top x axisshows number of columns, L1Norm = lasso normalized??
-```
-
-
-```{r}
-
-#set.seed(1050104) # reproduce random
-# cv = crossvalidation, multiple iteration of the model fitting process, each iteration runs on each slice of the data (splits it up in 5 random samples, each iteration 4 used for training, 1 for testing) 
-glmnet_unbal_cv <- cv.glmnet(criticalFound~.,
-                             train_prep,
-                             family="binomial",  #distribution family
-                             alpha = 0.5)
-
-plot(glmnet_unbal_cv)
-
-# different regularization 
-# many coulmns, penalty to columns = peanilizing, 
-# the better we are predicting the outcome, the higher y axis will be = binomial deviance
-# dotted lines are showing cut-off points for the lambda coeff, basically simlpe or complex good enough...
-
-coefficients(glmnet_unbal_cv)
-
-coef(glmnet_unbal_cv, s = "lambda.min")
-
-#lambda.min = lambda that most minimises predictive error
-#lambda.1se = lambda that performs more penalization but still has close predictive power
 
 ```
 
 
 
+
+
+### Cleanup
 ```{r}
+spark_disconnect(sc)
 
-test_raw %>% 
-  bake(prepdata, .) %>% 
-  modelr:: add_predictions(glmnet_unbal,var = "glm_unbal") ->
-  test_scored
-
-#test_scored %>% 
-#  ggplot(aes(x=glmnet_unbal, group=was_delayed, fill= was_delayed)) + 
-#  geom_density(alpha=0.5) + 
-#  geom_vline(aes(xintercept=0))
-
-test_scored$glmnet_unbal_cv <- as.vector(predict(glmnet_unbal_cv, 
-                                                 test_scored,
-                                                 na.action = na.pass)) 
-
-
-test_scored$classification <- ifelse(test_scored$glmnet_unbal_cv < -2, 0,1) 
-
-
-test_scored %>% 
-    count(criticalFound,classification)
-
-# gray = no critc failiur
-# ljusbl = critical found
-test_scored %>% 
-  ggplot(aes(x=glmnet_unbal_cv, group=criticalFound, fill= criticalFound)) + 
-  geom_density(alpha=0.5) + 
-  geom_vline(aes(xintercept=-2))
 ```
+
 
