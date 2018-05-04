@@ -1,79 +1,108 @@
 ---
-title: "Chicago Food Inspection"
+title: "Chicago Food Inspection Using Spark"
 author: "Mitra Hajigholi"
 date: "2 May 2018"
 output: html_document
 ---
 
+
+### Initialization
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
-library(tidyverse) # group_by and filter and stuff in this package
+library(sparklyr)
+library(dplyr)
 library(ggplot2)
-library(tidyverse)
-library(recipes)
-library(glmnetUtils)
+
+sc <- spark_connect("local")
 
 ```
 ### READ
-```{r}
+```{r eval=FALSE}
 dat_model <- readRDS("C:/Users/Admin/Documents/food-inspections-evaluation/DATA/dat_model.Rds")
+#dat_model_tbl <- copy_to(sc, dat_model[,-1], "dat_model", overwrite = TRUE)
+dat_model_tbl <- copy_to(sc, select(dat_model,-Inspection_Date), "dat_model", overwrite = TRUE)
+
 food_inspections <- readRDS("C:/Users/Admin/Documents/food-inspections-evaluation/DATA/food_inspections.Rds")
+# either remove the data column or change the datatype of the date into a string before copying it to spark
+food_inspections_tbl <- copy_to(sc, food_inspections[,-11], "food_inspections", overwrite = TRUE)
 
 burglary_heat <- readRDS("C:/Users/Admin/Documents/food-inspections-evaluation/DATA/burglary_heat.Rds")
+burglary_heat_tbl <- copy_to(sc, burglary_heat, "burglary_heat", overwrite = TRUE)
+
 garbageCarts_heat <- readRDS("C:/Users/Admin/Documents/food-inspections-evaluation/DATA/garbageCarts_heat.Rds")
+garbageCarts_heat_tbl <- copy_to(sc, garbageCarts_heat, "garbageCarts_heat", overwrite = TRUE)
+
 sanitationComplaints_heat <- readRDS("C:/Users/Admin/Documents/food-inspections-evaluation/DATA/sanitationComplaints_heat.Rds")
+sanitationComplaints_heat_tbl <- copy_to(sc, sanitationComplaints_heat, "sanitationComplaints_heat", overwrite = TRUE)
+
+
 ```
+
+
+
+##==============================================================================
+## Options for working with spark results sets
+##==============================================================================
+- Use lazy execution to construct statements and get the results on the fly
+- Use sdf_register() to put the results into a spark table (update)
+- Use sdf_persist() to force any pending calcs to happen - doesn't necessarily persist in a nicely named object
+- Use collect() to perform the calcs and bring the results into an R data.frame
+
+to tell spark to register our changes to do stuff with it, run this
+ sparklyr::sdf_register("nameoftable")
+ or 
+ collect() brings into R memory
 
 
 
 ### Exploratory
 ```{r eval=FALSE}
 
-head(food_inspections,"foodinspect")
+head(food_inspections_tbl)  # head works for tables and dataframes
 
-dat_model %>% 
-  as_data_frame() %>% 
-  DataExplorer::GenerateReport()
+# Only works with dataframe, not table as spark use. need to change the template dataexplorer uses to gerate the report into a spark version. 
+
+#dat_model %>% 
+#  as_data_frame() %>% 
+#  DataExplorer::GenerateReport()  
 
 
-food_inspections %>% 
-  as_data_frame() %>% 
-  DataExplorer::GenerateReport()
+#food_inspections %>% 
+#  as_data_frame() %>% 
+#  DataExplorer::GenerateReport()  
 ```
 
 ```{r}
 
 ### Plot the heat map
 
-burglary_heat
-garbageCarts_heat
-sanitationComplaints_heat
+# Spark can not plot, we need to collect the data intro R mode to plot it.
 
 
-ggplot(garbageCarts_heat, aes(x=heat_values)) + geom_density()
-
-
-food_inspections %>% 
-    inner_join(sanitationComplaints_heat) %>% 
-    ggplot(aes(x=Latitude, y= Longitude, colour=heat_values)) + 
-               geom_point(alpha=0.5, size=1) +
-               scale_color_gradientn(colours = viridisLite::viridis(256, option = "A"))
-
-
-
-food_inspections %>% 
-    inner_join(garbageCarts_heat) %>% 
-    ggplot(aes(x=Latitude, y= Longitude, colour=heat_values)) + 
-               geom_point(alpha=0.5, size=1) +
-               scale_color_gradientn(colours = viridisLite::viridis(256, option = "A"))
-
-
-
-food_inspections %>% 
-    inner_join(burglary_heat) %>% 
-    ggplot(aes(x=Latitude, y= Longitude, colour=heat_values)) + 
-               geom_point(alpha=0.5, size=1) +
-               scale_color_gradientn(colours = viridisLite::viridis(256, option = "A"))
+# ggplot(garbageCarts_heat_tbl, aes(x=heat_values)) + geom_density()
+# 
+# 
+# food_inspections %>% 
+#     inner_join(sanitationComplaints_heat) %>% 
+#     ggplot(aes(x=Latitude, y= Longitude, colour=heat_values)) + 
+#                geom_point(alpha=0.5, size=1) +
+#                scale_color_gradientn(colours = viridisLite::viridis(256, option = "A"))
+# 
+# 
+# 
+# food_inspections %>% 
+#     inner_join(garbageCarts_heat) %>% 
+#     ggplot(aes(x=Latitude, y= Longitude, colour=heat_values)) + 
+#                geom_point(alpha=0.5, size=1) +
+#                scale_color_gradientn(colours = viridisLite::viridis(256, option = "A"))
+# 
+# 
+# 
+# food_inspections %>% 
+#     inner_join(burglary_heat) %>% 
+#     ggplot(aes(x=Latitude, y= Longitude, colour=heat_values)) + 
+#                geom_point(alpha=0.5, size=1) +
+#                scale_color_gradientn(colours = viridisLite::viridis(256, option = "A"))
 
 ```
 ### Reason for failing Inspection
@@ -103,36 +132,44 @@ food_inspections %>%
 ```{r}
 
 # Load libraries
-geneorama::detach_nonstandard_packages()
+#geneorama::detach_nonstandard_packages()
 ## Load libraries that are used
-geneorama::loadinstall_libraries(c("data.table", "glmnet", "ggplot2"))
+#geneorama::loadinstall_libraries(c("data.table", "glmnet", "ggplot2"))
 ## Load custom functions
-geneorama::sourceDir("CODE/functions/")
+#geneorama::sourceDir("CODE/functions/")
 
 
 ```
 
 ##==============================================================================
-## LOAD CACHED  FILES
+## FILTER TABLE  FILES
 ##==============================================================================
 ```{r}
 
-dat <- dat_model
+dat <- dat_model_tbl
 ## Only keep "Retail Food Establishment"
-dat <- dat[LICENSE_DESCRIPTION == "Retail Food Establishment"]
-## Remove License Description
-dat[ , LICENSE_DESCRIPTION := NULL]
-dat <- na.omit(dat)
+dat  %>%  
+    filter(LICENSE_DESCRIPTION == "Retail Food Establishment") %>% 
+    select(-LICENSE_DESCRIPTION)  ->  ## Remove License Description
+    dat_cleaned
+
+## print nr of row     
+sdf_nrow(dat_cleaned)
+sdf_nrow(dat)
+# and columns
+sdf_ncol(dat_cleaned)
+sdf_ncol(dat)
+
 
 ## Add criticalFound variable to dat:
-dat[ , criticalFound := pmin(1, criticalCount)]
+dat_cleaned %>% 
+    mutate(criticalFound = pmin(1, criticalCount)) ->
+    dat_mutated
+    ## Set the key for dat
 
-## Set the key for dat
-setkey(dat, Inspection_ID)
-
-
-
-head(dat)
+#setkey(dat, Inspection_ID)  # can not use set key in spark, do not need to...
+head(dat_cleaned)
+head(dat_mutated)
 ```
 
 
